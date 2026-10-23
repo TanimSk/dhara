@@ -1,0 +1,13 @@
+{
+  "name": "dhara-edge",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --env dev --port 8787 --persist-to ../var/wrangler",
+    "deploy": "wrangler deploy",
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "wrangler": "4.20.0"
+  }
+}

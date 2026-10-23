@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# One-time local setup for dhara V1 on macOS (Apple Silicon).
+# Needs: Homebrew, PostgreSQL running, Python 3.13, Node 20+, ffmpeg, cmake.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+mkdir -p var/bin var/log var/uploads var/scratch
+
+echo "→ C++ libraries"
+HOMEBREW_NO_AUTO_UPDATE=1 brew install -q libpq spdlog nlohmann-json >/dev/null
+
+echo "→ tusd"
+TUSD_VERSION=v2.10.1
+if [ ! -x var/bin/tusd ]; then
+  tmp="$(mktemp -d)"
+  curl -sSL -o "$tmp/tusd.zip" "https://github.com/tus/tusd/releases/download/$TUSD_VERSION/tusd_darwin_arm64.zip"
+  curl -sSL -o "$tmp/tusd.zip.sha256" "https://github.com/tus/tusd/releases/download/$TUSD_VERSION/tusd_darwin_arm64.zip.sha256"
+  (cd "$tmp" && shasum -a 256 -c tusd.zip.sha256)
+  unzip -qo "$tmp/tusd.zip" -d "$tmp"
+  find "$tmp" -name tusd -type f -exec cp {} var/bin/tusd \;
+  chmod +x var/bin/tusd
+  rm -rf "$tmp"
+fi
+
+echo "→ backend"
+[ -d backend/.venv ] || python3.13 -m venv backend/.venv
+backend/.venv/bin/pip install -q -r backend/requirements-dev.txt
+if [ ! -f backend/.env ]; then
+  gen() { python3 -c "import secrets;print(secrets.token_urlsafe($1))"; }
+  sed -e "s|^SECRET_KEY=.*|SECRET_KEY=$(gen 50)|" \
+      -e "s|^EDGE_INTERNAL_SECRET=.*|EDGE_INTERNAL_SECRET=$(gen 32)|" \
+      -e "s|^INTERNAL_SECRET=.*|INTERNAL_SECRET=$(gen 32)|" backend/.env.example > backend/.env
+fi
+createdb dhara 2>/dev/null || true
+backend/.venv/bin/python backend/manage.py migrate -v 0
+backend/.venv/bin/python backend/manage.py seed_plans
+
+echo "→ edge worker"
+(cd edge && npm install --no-fund --no-audit --silent)
+E=$(grep ^EDGE_INTERNAL_SECRET= backend/.env | cut -d= -f2); I=$(grep ^INTERNAL_SECRET= backend/.env | cut -d= -f2)
+printf "INTERNAL_SECRET=%s\nUSAGE_INGEST_SECRET=%s\n" "$E" "$I" > edge/.dev.vars
+
+echo "→ encoder"
+cmake -S encoder -B encoder/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=/usr/bin/clang++ >/dev/null
+cmake --build encoder/build -j4 >/dev/null
+
+echo "→ frontend"
+(cd frontend && npm install --no-fund --no-audit --silent)
+
+echo "Done. Start everything with: bin/dev"

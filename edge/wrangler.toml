@@ -1,0 +1,44 @@
+name = "dhara-edge"
+main = "src/index.js"
+compatibility_date = "2025-04-01"
+
+# ---------- production (V2): fill in the IDs, then `npm run deploy` ----------
+# routes = [{ pattern = "vid.<domain>/*", zone_name = "<domain>" }]
+
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "videos"
+
+[[kv_namespaces]]
+binding = "CONFIG"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+
+[[analytics_engine_datasets]]
+binding = "USAGE"
+dataset = "video_usage"
+
+[vars]
+# Dashboard origin, allowed to frame the player and load thumbnails.
+DASHBOARD_ORIGIN = "https://app.example.com"
+# INTERNAL_SECRET is a secret: `wrangler secret put INTERNAL_SECRET`
+
+# ---------- local development (V1): `npm run dev` ----------
+[env.dev]
+name = "dhara-edge-dev"
+
+[[env.dev.r2_buckets]]
+binding = "BUCKET"
+bucket_name = "videos"
+
+[[env.dev.kv_namespaces]]
+binding = "CONFIG"
+id = "dev-config"
+
+[[env.dev.analytics_engine_datasets]]
+binding = "USAGE"
+dataset = "video_usage_dev"
+
+[env.dev.vars]
+DASHBOARD_ORIGIN = "http://localhost:5173"
+# Local Worker posts usage to Django (Analytics Engine isn't available offline).
+USAGE_INGEST_URL = "http://127.0.0.1:8000/api/v1/internal/usage-ingest"

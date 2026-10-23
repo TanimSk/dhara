@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# Run the whole of dhara locally: Django, tusd, the edge Worker, encoderd and the React app.
+# Logs go to var/log/<service>.log. Ctrl-C stops everything.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+mkdir -p var/log var/uploads var/scratch
+
+# Secrets shared between services come from backend/.env
+env_get() { grep -E "^$1=" backend/.env | head -1 | cut -d= -f2-; }
+INTERNAL_SECRET="$(env_get INTERNAL_SECRET)"
+EDGE_INTERNAL_SECRET="$(env_get EDGE_INTERNAL_SECRET)"
+UPLOAD_DIR="$ROOT/var/uploads"
+
+if [ ! -x encoder/build/encoderd ]; then
+  echo "Building encoderd…"
+  cmake -S encoder -B encoder/build -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=/usr/bin/clang++ >/dev/null
+  cmake --build encoder/build -j4 >/dev/null
+fi
+
+pids=()
+start() {
+  local name="$1"; shift
+  ("$@" >"var/log/$name.log" 2>&1) &
+  pids+=($!)
+  printf "  %-9s → var/log/%s.log\n" "$name" "$name"
+}
+cleanup() {
+  echo; echo "Stopping…"
+  for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
+  pkill -P $$ 2>/dev/null || true
+  wait 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+echo "Starting dhara:"
+start django  backend/.venv/bin/python backend/manage.py runserver 127.0.0.1:8000
+start tusd    var/bin/tusd -host 127.0.0.1 -port 1080 -base-path /upload/ -behind-proxy \
+                -upload-dir "$UPLOAD_DIR" -max-size 10737418240 \
+                -hooks-http "http://127.0.0.1:8000/api/v1/internal/tusd-hooks?secret=$INTERNAL_SECRET" \
+                -hooks-enabled-events pre-create,post-finish -hooks-http-forward-headers Authorization \
+                -disable-cors
+start edge    bash -c "cd edge && npx wrangler dev --env dev --port 8787 --ip 127.0.0.1 --persist-to ../var/wrangler"
+start encoder env DATABASE_URL="dbname=$(env_get DB_NAME)" SCRATCH_DIR="$ROOT/var/scratch" \
+                EDGE_INTERNAL_URL=http://127.0.0.1:8787 EDGE_INTERNAL_SECRET="$EDGE_INTERNAL_SECRET" \
+                DJANGO_INTERNAL_URL=http://127.0.0.1:8000 INTERNAL_SECRET="$INTERNAL_SECRET" \
+                encoder/build/encoderd
+if [ -d frontend/node_modules ]; then
+  start web   bash -c "cd frontend && npx vite --port 5173 --strictPort"
+fi
+
+echo
+echo "  Dashboard  http://localhost:5173"
+echo "  API docs   http://localhost:8000/api/docs/"
+echo "  Edge       http://localhost:8787"
+echo
+echo "Press Ctrl-C to stop."
+wait
